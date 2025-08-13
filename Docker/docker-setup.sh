@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docker-setup.sh — Install/Uninstall Docker on Debian (Engine + Compose)
+# docker-setup.sh — Install/Uninstall Docker on Debian/Ubuntu/Pop!_OS (Engine + Compose)
 # Usage:
 #   ./docker-setup.sh install            # Docker installieren (empfohlen)
 #   ./docker-setup.sh install --rootless # Rootless-Setup zusätzlich vorbereiten
@@ -18,16 +18,57 @@ err() { printf "\033[1;31m[ERR ]\033[0m %s\n" "$*" >&2; }
 need_root() { [ "${EUID:-$(id -u)}" -eq 0 ] || { err "Bitte als root oder via sudo ausführen."; exit 1; }; }
 cmd_exists(){ command -v "$1" >/dev/null 2>&1; }
 
-DEBIAN_CODENAME="$(. /etc/os-release; echo "${VERSION_CODENAME}")"
-ARCH="$(dpkg --print-architecture)"
+# --- OS-Erkennung & Codename ---
+read_os_info() {
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  OS_ID="${ID:-}"
+  OS_LIKE="${ID_LIKE:-}"
+  CODENAME="${VERSION_CODENAME:-}"
+  if [ -z "${CODENAME}" ] && cmd_exists lsb_release; then
+    CODENAME="$(lsb_release -cs || true)"
+  fi
+
+  # Entscheide, welches Docker-Repo verwendet wird
+  if [[ "$OS_ID" == "ubuntu" || "$OS_ID" == "pop" || "$OS_LIKE" == *ubuntu* ]]; then
+    DOCKER_OS_PATH="ubuntu"
+    # Unterstützte Ubuntu-Codenames: focal, jammy, noble (Fallback: jammy)
+    case "$CODENAME" in
+      focal|jammy|noble) : ;;
+      *) warn "Unbekannter Ubuntu/Pop Codename '$CODENAME' – nutze 'jammy' als Fallback."; CODENAME="jammy";;
+    esac
+  else
+    DOCKER_OS_PATH="debian"
+    # Unterstützte Debian-Codenames: bullseye, bookworm (Fallback: bookworm)
+    case "$CODENAME" in
+      bullseye|bookworm) : ;;
+      *) warn "Unbekannter Debian Codename '$CODENAME' – nutze 'bookworm' als Fallback."; CODENAME="bookworm";;
+    esac
+  fi
+
+  ARCH="$(dpkg --print-architecture)"
+}
 
 install_repo() {
-  log "Docker APT-Repository einbinden (${DEBIAN_CODENAME}, ${ARCH})…"
+  read_os_info
+  log "Docker APT-Repository einbinden (${DOCKER_OS_PATH}, ${CODENAME}, ${ARCH})…"
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+  # Alten falschen Eintrag entfernen, falls von vorherigem Lauf vorhanden
+  if [ -f /etc/apt/sources.list.d/docker.list ]; then
+    if ! grep -q "download.docker.com/linux/${DOCKER_OS_PATH}" /etc/apt/sources.list.d/docker.list; then
+      warn "Falsches Docker-Repo gefunden – ersetze Eintrag."
+      rm -f /etc/apt/sources.list.d/docker.list
+    fi
+  fi
+
+  curl -fsSL "https://download.docker.com/linux/${DOCKER_OS_PATH}/gpg" \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
+
   cat >/etc/apt/sources.list.d/docker.list <<EOF
-deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian ${DEBIAN_CODENAME} stable
+deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/${DOCKER_OS_PATH} ${CODENAME} stable
 EOF
 }
 
@@ -47,11 +88,18 @@ install_docker() {
   apt-get update -y
   apt-get install -y ca-certificates curl gnupg lsb-release
 
-  # Repo einrichten, falls nicht vorhanden
+  # Repo einrichten, falls nicht vorhanden/korrekt
   if [ ! -f /etc/apt/sources.list.d/docker.list ]; then
     install_repo
   else
-    log "Docker-Repo existiert bereits."
+    # Sicherstellen, dass der Eintrag zum OS passt
+    read_os_info
+    if ! grep -q "download.docker.com/linux/${DOCKER_OS_PATH}" /etc/apt/sources.list.d/docker.list; then
+      warn "Docker-Repo passt nicht zum System – setze korrekt neu."
+      install_repo
+    else
+      log "Docker-Repo ist bereits korrekt."
+    fi
   fi
 
   log "Docker Engine + Compose installieren…"
@@ -116,7 +164,7 @@ main() {
     test) test_hello;;
     ""|help|-h|--help)
       cat <<EOF
-docker-setup.sh — Debian Installer für Docker Engine + Compose
+docker-setup.sh — Installer für Docker Engine + Compose (Debian/Ubuntu/Pop!_OS)
 Usage:
   $0 install [--no-group] [--no-enable] [--rootless]
   $0 test
