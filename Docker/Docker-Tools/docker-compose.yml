@@ -1,0 +1,38 @@
+cat > docker-compose.yml <<'EOF'
+version: "3.9"
+
+services:
+  web:
+    image: nginx:alpine
+    container_name: ${WEB_NAME:-web}
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    volumes:
+      - ./html:/usr/share/nginx/html:ro
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: ${WEB_NAME:-web}_db
+    environment:
+      POSTGRES_USER: ${DB_USER:-user}
+      POSTGRES_PASSWORD: ${DB_PASS:-pass}
+      POSTGRES_DB: ${DB_NAME:-app}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  adminer:
+    image: adminer:latest
+    container_name: ${WEB_NAME:-web}_adminer
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+    depends_on:
+      - db
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+EOF
